@@ -1,5 +1,7 @@
 import os
+import re
 import streamlit as st
+from dotenv import load_dotenv
 
 from typing_extensions import TypedDict
 from typing import Annotated, List
@@ -129,7 +131,9 @@ st.markdown("""
 
 # Load API Keys (Set up in .env file)
 
-os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+
+load_dotenv()
+os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
 
 # Initialize LLM
 llm = ChatGroq(model="llama-3.1-8b-instant")
@@ -151,7 +155,8 @@ class InterviewState(TypedDict):
 # Step 1: Generate Questions
 generate_questions_prompt = PromptTemplate(
     input_variables=["job_description"],
-    template="""Based on the following job description, generate 5 interview questions in a numbered format:\n\n"
+    template=(
+        "Based on the following job description, generate 5 interview questions in a numbered format:\n\n"
         "{job_description}\n\n"
         "Format the output as:\n"
         "1. [Question 1]\n"
@@ -159,16 +164,50 @@ generate_questions_prompt = PromptTemplate(
         "3. [Question 3]\n"
         "4. [Question 4]\n"
         "5. [Question 5]"
- """
+    )
 )
 generate_questions_chain = generate_questions_prompt | llm
 
+def get_response_text(response):
+    if isinstance(response, str):
+        return response
+    return getattr(response, "content", str(response))
+
+
+def normalize_questions(raw_text: str):
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    questions = []
+    for line in lines:
+        # Only keep numbered question items and ignore introductory headers.
+        numbered_match = re.match(r'^\s*\d+[\)\.\s-]+(.+)$', line)
+        bullet_match = re.match(r'^\s*[-*•]\s+(.+)$', line)
+        if numbered_match:
+            clean_line = numbered_match.group(1).strip()
+        elif bullet_match:
+            clean_line = bullet_match.group(1).strip()
+        else:
+            continue
+        clean_line = clean_line.strip(' "\'')
+        if clean_line:
+            questions.append(clean_line)
+    return questions
+
+
 def generate_questions(state: InterviewState):
     response = generate_questions_chain.invoke({"job_description": state["job_description"]})
-    questions = response.content.strip().split('\n')
+    raw_text = get_response_text(response).strip()
+    questions = normalize_questions(raw_text)
+    if not questions:
+        questions = [
+            "Describe your experience with the required technology stack.",
+            "How do you approach debugging and testing?",
+            "Tell me about a challenging project and how you solved it.",
+            "How do you manage deadlines and collaborate with a team?",
+            "Why do you want this role and what do you bring to it?"
+        ]
     return {
-        "interview_questions": questions, 
-        "current_question": questions[0], 
+        "interview_questions": questions,
+        "current_question": questions[0],
         "current_question_index": 0,
         "max_questions": len(questions),
         "interview_complete": False,
@@ -358,7 +397,7 @@ if not st.session_state.interview_started:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### Job Description")
     st.markdown("Enter a job description or skills you want to practice interviewing for:")
-    job_description = st.text_area("", "Looking for a Python Developer with experience in Flask, SQL, and REST APIs.", height=150)
+    job_description = st.text_area("Job description", "Looking for a Python Developer with experience in Flask, SQL, and REST APIs.", height=150)
     
     # Start interview button
     col1, col2, col3 = st.columns([1,2,1])
@@ -466,10 +505,11 @@ else:
                 button_text = "Continue to Next Question" if curr_idx < max_questions - 1 else "Complete Interview"
                 if st.button(button_text, type="primary"):
                     if curr_idx < max_questions - 1:
-                        # Use the answer_graph to properly update the state
                         with st.spinner("Preparing next question..."):
-                            st.session_state.interview_state = state
+                            next_state = next_question(state.copy())
+                            st.session_state.interview_state = next_state
                             st.session_state.submitted_answer = False
+                            st.session_state.answer_text = ""
                     else:
                         # Complete interview - generate final feedback
                         with st.spinner("Generating final evaluation..."):
@@ -503,7 +543,8 @@ else:
                         eval_state = state.copy()
                         eval_state["answer"] = transcribed_text
                         with st.spinner("Analyzing your answer..."):
-                            updated_state = answer_graph.invoke(eval_state)
+                            analyzed_state = analyze_answer(eval_state)
+                            updated_state = provide_feedback(analyzed_state)
                         st.session_state.interview_state = updated_state
                         st.session_state.submitted_answer = True
                         st.rerun()
