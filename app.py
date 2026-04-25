@@ -129,11 +129,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Load API Keys (Set up in .env file)
-
+# Load API Keys (Set up in .env file or Streamlit Secrets)
 
 load_dotenv()
-os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
+api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
+if not api_key:
+    st.error(
+        "Missing GROQ_API_KEY. Set it in a local `.env` file or in Streamlit Community Cloud Secrets."
+    )
+    st.stop()
+os.environ["GROQ_API_KEY"] = api_key
 
 # Initialize LLM
 llm = ChatGroq(model="llama-3.1-8b-instant")
